@@ -1108,7 +1108,7 @@
 
 <script>
 // ── State ──
-const DEFAULT_BACKEND = "https://goethe-booking-bot-production-21af.up.railway.app";
+const DEFAULT_BACKEND = window.location.origin;
 let BASE = localStorage.getItem("backend_url") || DEFAULT_BACKEND;
 let running = false;
 let evtSource = null;

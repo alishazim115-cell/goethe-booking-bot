@@ -91,7 +91,7 @@ def validate(model_cls):
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 import flask
-from flask import Blueprint, Flask, Response, jsonify, request
+from flask import Blueprint, Flask, Response, jsonify, request, send_file
 from flasgger import Swagger, swag_from
 
 PROJECT_DIR = Path(__file__).parent.absolute()
@@ -193,6 +193,7 @@ _ALLOWED_ORIGINS = {
     "https://snazzy-kleicha-1d59fd.netlify.app",
     "https://goethe-booking-bot-production-092f.up.railway.app",
     "https://goethe-booking-bot-production-21af.up.railway.app",
+    "https://goethe-booking-bot.onrender.com",
     "http://localhost:3000",
     "http://localhost:5000",
     "http://127.0.0.1:5000",
@@ -424,7 +425,7 @@ def add_headers(resp):
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
-        "connect-src 'self' https://goethe-booking-dashboard.netlify.app https://incredible-seahorse-66be2b.netlify.app https://snazzy-kleicha-1d59fd.netlify.app; "
+        "connect-src 'self' https://goethe-booking-dashboard.netlify.app https://incredible-seahorse-66be2b.netlify.app https://snazzy-kleicha-1d59fd.netlify.app https://goethe-booking-bot.onrender.com; "
         "img-src 'self' data:; "
         "font-src 'self' https://fonts.gstatic.com; "
         "frame-ancestors 'none';"
@@ -550,7 +551,29 @@ def api_refresh():
 
 # ── Routes ──
 
+FRONTEND_DIR = Path(__file__).parent / "frontend"
+
 @app.route("/")
+def serve_frontend():
+    index_html = FRONTEND_DIR / "index.html"
+    if index_html.exists():
+        return send_file(str(index_html))
+    return jsonify({"error": "Frontend not found"}), 404
+
+@app.route("/manifest.json")
+def serve_manifest():
+    manifest = FRONTEND_DIR / "manifest.json"
+    if manifest.exists():
+        return send_file(str(manifest))
+    return jsonify({}), 404
+
+@app.route("/sw.js")
+def serve_sw():
+    sw = FRONTEND_DIR / "sw.js"
+    if sw.exists():
+        return send_file(str(sw))
+    return "", 404
+
 @app.route("/health")
 def health():
     uptime_secs = int(time.time() - PROCESS_START_TIME)
