@@ -1,0 +1,78 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests/ -v
+      - name: Security audit
+        run: pip install pip-audit && pip-audit --desc on 2>&1 || true
+
+  deploy-netlify:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy frontend to Netlify
+        uses: nwtgck/actions-netlify@v3.0
+        with:
+          publish-dir: frontend
+          production-branch: main
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          deploy-message: "Auto-deploy from GitHub Actions"
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+
+  deploy-railway:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Link Railway project
+        run: railway link --project df54b489-2cdf-48c4-9d53-1e3886858311
+        env:
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      - name: Deploy to Railway
+        run: railway up --detach --service 0596e8bf-ed43-4033-a585-0c67e7b3a43d
+        env:
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      - name: Health check gate (zero-downtime verification)
+        run: |
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sf https://goethe-booking-bot-production-092f.up.railway.app/api/health 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin).get('status','down'))" 2>/dev/null || echo "down")
+            if [ "$STATUS" = "ok" ]; then
+              echo "Health check passed (attempt $i)"
+              exit 0
+            fi
+            echo "Waiting... (attempt $i/30)"
+            sleep 5
+          done
+          echo "Health check failed after 30 attempts"
+          exit 1
+      - name: Notify deploy success
+        if: success()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "text=✅ Deploy successful: goethe-booking-bot%0ACommit: ${{ github.sha }}%0ARailway: https://goethe-booking-bot-production-092f.up.railway.app%0ANetlify: https://goethe-booking-dashboard.netlify.app" > /dev/null 2>&1 || true
+      - name: Notify deploy failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "text=❌ Deploy FAILED: goethe-booking-bot%0ACommit: ${{ github.sha }}%0ACheck: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" > /dev/null 2>&1 || true
