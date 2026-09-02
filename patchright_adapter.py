@@ -398,6 +398,26 @@ def create_patchright_driver(
     """Launch Patchright Chromium with persistent context and warm up Akamai cookies."""
     logger = logger or logging.getLogger("patchright_adapter")
 
+    # On headless servers (Render), use xvfb virtual display for headful mode.
+    # Headful mode bypasses Akamai's headless detection; xvfb provides a fake display.
+    _xvfb_display = None
+    if use_headless and not os.environ.get("DISPLAY"):
+        try:
+            import subprocess
+            _xvfb_display = subprocess.Popen(
+                ["Xvfb", ":99", "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            os.environ["DISPLAY"] = ":99"
+            use_headless = False  # Force headful — xvfb provides the display
+            time.sleep(1)
+            logger.info("Xvfb virtual display started on :99 — running headful")
+        except Exception as exc:
+            logger.info("Xvfb not available, running headless: %s", str(exc)[:60])
+    elif os.environ.get("DISPLAY"):
+        use_headless = False  # DISPLAY already set (Dockerfile CMD started Xvfb)
+        logger.info("DISPLAY already set — running headful via existing Xvfb")
+
     pw = sync_playwright().start()
 
     # Persistent profile for cookie persistence across sessions
@@ -413,28 +433,17 @@ def create_patchright_driver(
 
     vp = viewport or (1366, 768)
 
-    # Try channel="chrome" first (uses system Chrome), fall back to bundled Chromium
-    try:
-        context = pw.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=use_headless,
-            channel="chrome",
-            args=launch_args,
-            viewport={"width": vp[0], "height": vp[1]},
-            user_agent=user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            locale="en-US",
-        )
-        logger.info("Launched with system Chrome (channel=chrome)")
-    except Exception:
-        logger.info("System Chrome not found, using Patchright bundled Chromium")
-        context = pw.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=use_headless,
-            args=launch_args,
-            viewport={"width": vp[0], "height": vp[1]},
-            user_agent=user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            locale="en-US",
-        )
+    # ALWAYS use Patchright's bundled Chromium — its CDP patches only apply to its own browser.
+    # System Chrome (channel="chrome") is NOT patched and gets detected by Akamai.
+    context = pw.chromium.launch_persistent_context(
+        user_data_dir=str(profile_dir),
+        headless=use_headless,
+        args=launch_args,
+        viewport={"width": vp[0], "height": vp[1]},
+        user_agent=user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        locale="en-US",
+    )
+    logger.info("Launched Patchright bundled Chromium (headless=%s)", use_headless)
 
     page = context.new_page()
 

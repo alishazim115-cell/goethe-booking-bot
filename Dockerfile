@@ -36,5 +36,6 @@ WORKDIR /app
 COPY . .
 
 ENV PORT=5000 HOST=0.0.0.0
+ENV DISPLAY=:99
 EXPOSE 5000
-CMD ["python", "webapp.py"]
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &>/dev/null & sleep 1 && python webapp.py"]
