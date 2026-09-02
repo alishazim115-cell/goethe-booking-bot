@@ -694,18 +694,38 @@ def api_add_student():
         "motivation": (data.get("motivation") or "").strip(),
         "promo_code": (data.get("promo_code") or "").strip(),
     }
+    sheet_ok = False
+    sheet_msg = ""
+    db_ok = False
+    try:
+        import google_sheets
+        sheet_student = dict(student)
+        sheet_student["password"] = password_plain
+        result = google_sheets.append_student(sheet_student)
+        if result == "OK":
+            sheet_ok = True
+            sheet_msg = "Saved to Google Sheets"
+        else:
+            sheet_msg = result
+            print(f"[SHEETS] append_student failed for '{name}': {result}")
+    except Exception as exc:
+        sheet_msg = str(exc)
+        print(f"[SHEETS] append_student exception for '{name}': {exc}")
     try:
         sid = db.add_student(student)
-        try:
-            import google_sheets
-            sheet_student = dict(student)
-            sheet_student["password"] = password_plain
-            google_sheets.append_student(sheet_student)
-        except Exception:
-            pass
-        return jsonify({"ok": True, "id": sid})
+        db_ok = True
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        print(f"[DB] add_student failed for '{name}': {exc}")
+        sid = None
+    if db_ok:
+        resp = {"ok": True, "id": sid}
+    else:
+        resp = {"ok": False, "error": f"DB save failed: {exc}"}
+    if not sheet_ok:
+        resp["sheet_warning"] = f"Google Sheets sync failed: {sheet_msg}. Student saved locally only — may be lost on restart."
+    else:
+        resp["sheet_ok"] = True
+    return jsonify(resp)
 
 
 @bp.route("/students/<int:student_id>", methods=["DELETE"])
@@ -953,6 +973,59 @@ def api_sheets_update_schedule():
         msg = google_sheets.update_schedule_tab()
         msg2 = google_sheets.setup_dropdown()
         return jsonify({"ok": True, "schedule": msg, "dropdown": msg2})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/sheets/sync-to-sheets", methods=["POST"])
+@require_auth
+def api_sync_to_sheets():
+    """Push all current students to Google Sheets (bulk sync)."""
+    try:
+        import google_sheets
+        all_students = _get_loaded_students()
+        synced = 0
+        errors = []
+        for s in all_students:
+            try:
+                sheet_student = dict(s)
+                pw = s.get("password", "")
+                if pw and not pw.startswith("gAAAAA"):
+                    sheet_student["password"] = pw
+                else:
+                    try:
+                        sheet_student["password"] = crypto_utils.decrypt_password(pw, FERNET_KEY)
+                    except Exception:
+                        sheet_student["password"] = ""
+                result = google_sheets.append_student(sheet_student)
+                if result == "OK":
+                    synced += 1
+                else:
+                    errors.append(f"{s.get('name','?')}: {result}")
+            except Exception as exc:
+                errors.append(f"{s.get('name','?')}: {exc}")
+        msg = f"Synced {synced}/{len(all_students)} students to Google Sheets"
+        if errors:
+            msg += f". {len(errors)} errors: {'; '.join(errors[:3])}"
+        return jsonify({"ok": True, "message": msg, "synced": synced, "total": len(all_students), "errors": errors})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/sheets/ensure-headers", methods=["POST"])
+@require_auth
+def api_ensure_sheet_headers():
+    """Ensure the Google Sheet has the correct header row."""
+    try:
+        import google_sheets
+        gc = google_sheets.get_client(write=True)
+        sh = gc.open_by_key(google_sheets.SHEET_ID)
+        ws = sh.sheet1
+        existing = ws.row_values(1)
+        if not existing or existing != google_sheets.COLUMNS:
+            ws.update("A1", [google_sheets.COLUMNS])
+            return jsonify({"ok": True, "message": "Headers written to Google Sheet"})
+        return jsonify({"ok": True, "message": "Headers already correct"})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
