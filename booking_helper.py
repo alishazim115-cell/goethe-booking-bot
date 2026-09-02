@@ -40,6 +40,19 @@ try:
 except ImportError:
     curl_requests = None  # type: ignore[assignment]
     HAS_CURL_CFFI = False
+# ── Patchright (preferred) or Selenium fallback ──
+try:
+    from patchright_adapter import (
+        PatchrightDriver,
+        PatchrightElement,
+        create_patchright_driver,
+        human_move_and_click_patchright,
+    )
+    from cookie_handler import dismiss_cookie_popup
+    HAS_PATCHRIGHT = True
+except ImportError:
+    HAS_PATCHRIGHT = False
+
 from selenium import webdriver
 try:
     import undetected_chromedriver as uc
@@ -325,9 +338,31 @@ def _apply_stealth(driver: webdriver.Chrome) -> None:
         pass
 
 
-def create_driver(use_headless: bool, logger: logging.Logger, proxy: Optional[str] = None) -> webdriver.Chrome:
+def create_driver(use_headless: bool, logger: logging.Logger, proxy: Optional[str] = None):
+    """Create browser driver. Prefers Patchright (bypasses Cloudflare), falls back to Selenium."""
     global _driver_counter
     _driver_counter += 1
+
+    # ── Path 1: Patchright (preferred — bypasses Cloudflare) ──
+    if HAS_PATCHRIGHT:
+        for attempt in range(1, 4):
+            try:
+                driver = create_patchright_driver(
+                    use_headless=use_headless,
+                    logger=logger,
+                    proxy=proxy,
+                )
+                logger.info("Driver created (Patchright — Cloudflare bypass): viewport=%s, proxy=%s",
+                            "random", proxy or "none")
+                return driver
+            except Exception as exc:
+                logger.warning("Patchright attempt %d/3 failed: %s", attempt, exc)
+                if attempt < 3:
+                    time.sleep(3)
+                else:
+                    logger.warning("Patchright failed, falling back to Selenium")
+
+    # ── Path 2: Selenium fallback ──
     options = Options()
 
     # ── Browser fingerprint randomization ──
@@ -425,7 +460,7 @@ def create_driver(use_headless: bool, logger: logging.Logger, proxy: Optional[st
             else:
                 raise
 
-    logger.info("Driver created: UA=%s, VP=%sx%s%s", ua[:50], vp[0], vp[1], f", proxy={proxy}" if proxy else "")
+    logger.info("Driver created (Selenium): UA=%s, VP=%sx%s%s", ua[:50], vp[0], vp[1], f", proxy={proxy}" if proxy else "")
     return driver
 
 
@@ -510,7 +545,14 @@ def pick_preferred_button(buttons: Sequence[WebElement], preferred_city: str) ->
     return buttons[0]
 
 
-def human_move_and_click(driver: webdriver.Chrome, element: WebElement) -> None:
+def human_move_and_click(driver, element) -> None:
+    """Click element with human-like behavior. Works with both Selenium and Patchright."""
+    # Patchright path — Bezier curve mouse movement
+    if HAS_PATCHRIGHT and hasattr(driver, '_page'):
+        human_move_and_click_patchright(driver, element)
+        return
+
+    # Selenium path — original ActionChains
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
     try:
         driver.execute_script("arguments[0].removeAttribute('target');", element)
@@ -974,7 +1016,11 @@ def scheduled_wait(booking_time_str: str, logger: logging.Logger, stop_event: th
     return False
 
 
-def enforce_single_tab(driver: webdriver.Chrome) -> None:
+def enforce_single_tab(driver) -> None:
+    """Close extra tabs, keep only the active one. Works with both Selenium and Patchright."""
+    if HAS_PATCHRIGHT and hasattr(driver, 'enforce_single_tab'):
+        driver.enforce_single_tab()
+        return
     handles = driver.window_handles
     if len(handles) <= 1:
         return
@@ -990,7 +1036,14 @@ def enforce_single_tab(driver: webdriver.Chrome) -> None:
     driver.switch_to.window(keep)
 
 
-def wait_for_document_ready(driver: webdriver.Chrome, timeout: int = 30) -> None:
+def wait_for_document_ready(driver, timeout: int = 30) -> None:
+    """Wait for document.readyState == 'complete'. Works with both Selenium and Patchright."""
+    if HAS_PATCHRIGHT and hasattr(driver, '_page'):
+        try:
+            driver._page.wait_for_load_state("domcontentloaded", timeout=timeout * 1000)
+        except Exception:
+            pass
+        return
     end = time.time() + timeout
     while time.time() < end:
         state = driver.execute_script("return document.readyState")
@@ -1082,7 +1135,11 @@ _last_login_error = ""
 def get_last_login_error() -> str:
     return _last_login_error
 
-def _dismiss_cookie_consent(driver: webdriver.Chrome) -> None:
+def _dismiss_cookie_consent(driver) -> None:
+    """Dismiss cookie consent popup. Works with both Selenium and Patchright."""
+    if HAS_PATCHRIGHT and hasattr(driver, '_page'):
+        dismiss_cookie_popup(driver)
+        return
     try:
         for sel in ["#usercentrics-root", ".uc-banner", "[data-testid='uc-accept-all']", ".cookie-consent", "[aria-label*='cookie']"]:
             els = driver.find_elements(By.CSS_SELECTOR, sel)

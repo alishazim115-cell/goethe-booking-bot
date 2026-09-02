@@ -30,6 +30,7 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 RUN python -m playwright install chromium 2>/dev/null || true
+RUN python -m patchright install chromium 2>/dev/null || true
 
 WORKDIR /app
 COPY . .

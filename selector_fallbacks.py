@@ -1,14 +1,38 @@
+"""
+Selector fallback system — works with BOTH Selenium and Patchright.
+
+When running on Patchright (via PatchrightDriver), the functions use
+driver.find_element() / driver.find_elements() which handle By→Patchright conversion.
+When running on Selenium, they use WebDriverWait + EC as before.
+"""
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+# ── Try Selenium imports (fallback if not installed) ──
+try:
+    from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.remote.webelement import WebElement
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.support.ui import WebDriverWait
+    HAS_SELENIUM = True
+except ImportError:
+    HAS_SELENIUM = False
+    NoSuchElementException = type('NoSuchElementException', (Exception,), {})
+    TimeoutException = type('TimeoutException', (Exception,), {})
+    StaleElementReferenceException = type('StaleElementReferenceException', (Exception,), {})
+    class By:
+        CSS_SELECTOR = "css"
+        XPATH = "xpath"
+        TAG_NAME = "tag"
+    WebElement = None
+    EC = None
+    WebDriverWait = None
+
 
 ELEMENT_SELECTORS: Dict[str, List[Tuple[str, str]]] = {
     "finder_container": [
@@ -241,16 +265,120 @@ LOGIN_ERROR_SELECTORS = [
 ]
 
 
-def find_element_fallback(driver, element_key: str, timeout: int = 10, logger: Optional[logging.Logger] = None) -> Optional[WebElement]:
+def _is_patchright(driver) -> bool:
+    """Check if driver is a PatchrightDriver."""
+    return hasattr(driver, '_page') and hasattr(driver, '_browser')
+
+
+def find_element_fallback(driver, element_key: str, timeout: int = 10,
+                          logger: Optional[logging.Logger] = None):
+    """
+    Find a single element using fallback selectors.
+    Works with both Selenium WebDriver and PatchrightDriver.
+    Returns WebElement or PatchrightElement.
+    """
     selectors = ELEMENT_SELECTORS.get(element_key)
     if not selectors:
         if logger:
             logger.error("Unknown element key: %s", element_key)
         return None
-    per_selector_timeout = max(timeout / len(selectors), 1)
+
+    if _is_patchright(driver):
+        return _find_element_patchright(driver, selectors, timeout, logger)
+    else:
+        return _find_element_selenium(driver, selectors, timeout, logger)
+
+
+def find_elements_fallback(driver, element_key: str, timeout: int = 10,
+                           logger: Optional[logging.Logger] = None) -> list:
+    """
+    Find multiple elements using fallback selectors.
+    Works with both Selenium WebDriver and PatchrightDriver.
+    Returns list of WebElement or PatchrightElement.
+    """
+    selectors = ELEMENT_SELECTORS.get(element_key)
+    if not selectors:
+        return []
+
+    if _is_patchright(driver):
+        return _find_elements_patchright(driver, selectors, timeout, logger)
+    else:
+        return _find_elements_selenium(driver, selectors, timeout, logger)
+
+
+def wait_for_any_selector(driver, element_key: str, timeout: int = 15,
+                          logger: Optional[logging.Logger] = None):
+    """
+    Wait for any of the fallback selectors to match a visible element.
+    Works with both Selenium WebDriver and PatchrightDriver.
+    """
+    selectors = ELEMENT_SELECTORS.get(element_key)
+    if not selectors:
+        return None
+
+    if _is_patchright(driver):
+        return _wait_for_any_patchright(driver, selectors, timeout, logger)
+    else:
+        return _wait_for_any_selenium(driver, selectors, timeout, logger)
+
+
+# ---------------------------------------------------------------------------
+# Patchright implementations
+# ---------------------------------------------------------------------------
+
+def _find_element_patchright(driver, selectors, timeout, logger):
+    """Find element using PatchrightDriver.find_element()."""
+    per_timeout = max(timeout / len(selectors), 1)
     for by, selector in selectors:
         try:
-            element = WebDriverWait(driver, per_selector_timeout).until(
+            el = driver.find_element(by, selector)
+            if el and el.is_displayed():
+                return el
+        except Exception:
+            continue
+    return None
+
+
+def _find_elements_patchright(driver, selectors, timeout, logger):
+    """Find elements using PatchrightDriver.find_elements()."""
+    per_timeout = max(timeout / len(selectors), 1)
+    for by, selector in selectors:
+        try:
+            elements = driver.find_elements(by, selector)
+            visible = [e for e in elements if e.is_displayed()]
+            if visible:
+                return visible
+        except Exception:
+            continue
+    return []
+
+
+def _wait_for_any_patchright(driver, selectors, timeout, logger):
+    """Wait for any selector to match via Patchright."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for by, selector in selectors:
+            try:
+                elements = driver.find_elements(by, selector)
+                visible = [e for e in elements if e.is_displayed()]
+                if visible:
+                    return visible[0]
+            except Exception:
+                continue
+        time.sleep(0.5)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Selenium implementations (original logic)
+# ---------------------------------------------------------------------------
+
+def _find_element_selenium(driver, selectors, timeout, logger):
+    """Find element using Selenium WebDriverWait."""
+    per_timeout = max(timeout / len(selectors), 1)
+    for by, selector in selectors:
+        try:
+            element = WebDriverWait(driver, per_timeout).until(
                 EC.presence_of_element_located((by, selector))
             )
             if element and element.is_displayed():
@@ -260,14 +388,12 @@ def find_element_fallback(driver, element_key: str, timeout: int = 10, logger: O
     return None
 
 
-def find_elements_fallback(driver, element_key: str, timeout: int = 10, logger: Optional[logging.Logger] = None) -> List[WebElement]:
-    selectors = ELEMENT_SELECTORS.get(element_key)
-    if not selectors:
-        return []
-    per_selector_timeout = max(timeout / len(selectors), 1)
+def _find_elements_selenium(driver, selectors, timeout, logger):
+    """Find elements using Selenium WebDriverWait."""
+    per_timeout = max(timeout / len(selectors), 1)
     for by, selector in selectors:
         try:
-            elements = WebDriverWait(driver, per_selector_timeout).until(
+            elements = WebDriverWait(driver, per_timeout).until(
                 EC.presence_of_all_elements_located((by, selector))
             )
             visible = [e for e in elements if e.is_displayed()]
@@ -278,10 +404,8 @@ def find_elements_fallback(driver, element_key: str, timeout: int = 10, logger: 
     return []
 
 
-def wait_for_any_selector(driver, element_key: str, timeout: int = 15, logger: Optional[logging.Logger] = None) -> Optional[WebElement]:
-    selectors = ELEMENT_SELECTORS.get(element_key)
-    if not selectors:
-        return None
+def _wait_for_any_selenium(driver, selectors, timeout, logger):
+    """Wait for any selector via Selenium polling."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for by, selector in selectors:
