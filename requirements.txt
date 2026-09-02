@@ -1,5 +1,5 @@
 selenium>=4.10
-undetected-chromedriver>=3.5.0
+undetected-chromedriver>=3.5.5
 webdriver-manager>=4.0.0
 patchright>=1.50
 plyer>=2.1.0
