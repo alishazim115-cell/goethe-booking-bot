@@ -16,6 +16,9 @@ Frontend connects via Backend URL input.
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import gc
 import json
 import logging
