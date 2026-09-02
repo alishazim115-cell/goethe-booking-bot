@@ -268,7 +268,12 @@ def _validate_students(students: List[Dict]) -> None:
                 errors.append(f"Row {idx}: invalid DOB format '{dob}' (use DD.MM.YYYY or DD/MM/YYYY)")
         if bdt:
             try:
-                dt.datetime.fromisoformat(bdt)
+                bdt_normalized = bdt.replace(" at ", " ")
+                if "T" in bdt_normalized or "-" in bdt_normalized:
+                    dt.datetime.fromisoformat(bdt_normalized)
+                else:
+                    today = dt.date.today().isoformat()
+                    dt.datetime.fromisoformat(f"{today}T{bdt_normalized}")
             except ValueError:
                 errors.append(f"Row {idx}: invalid booking_datetime '{bdt}' (use ISO format YYYY-MM-DDTHH:MM)")
 
@@ -280,6 +285,8 @@ def parse_exam_time_str(raw: str) -> Optional[dt.datetime]:
     raw = raw.strip()
     if not raw:
         return None
+    # Normalize: "04.09.2026 at 14:16" -> "04.09.2026 14:16"
+    raw = raw.replace(" at ", " ")
     try:
         if "T" in raw or "-" in raw:
             return dt.datetime.fromisoformat(raw)
