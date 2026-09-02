@@ -413,15 +413,28 @@ def create_patchright_driver(
 
     vp = viewport or (1366, 768)
 
-    context = pw.chromium.launch_persistent_context(
-        user_data_dir=str(profile_dir),
-        headless=use_headless,
-        channel="chrome",
-        args=launch_args,
-        viewport={"width": vp[0], "height": vp[1]},
-        user_agent=user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        locale="en-US",
-    )
+    # Try channel="chrome" first (uses system Chrome), fall back to bundled Chromium
+    try:
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=use_headless,
+            channel="chrome",
+            args=launch_args,
+            viewport={"width": vp[0], "height": vp[1]},
+            user_agent=user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            locale="en-US",
+        )
+        logger.info("Launched with system Chrome (channel=chrome)")
+    except Exception:
+        logger.info("System Chrome not found, using Patchright bundled Chromium")
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=use_headless,
+            args=launch_args,
+            viewport={"width": vp[0], "height": vp[1]},
+            user_agent=user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            locale="en-US",
+        )
 
     page = context.new_page()
 
